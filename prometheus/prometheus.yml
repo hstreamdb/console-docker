@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+  external_labels:
+    monitor: "hstream-monitor"
+
+scrape_configs:
+  - job_name: "hstream_metrics"
+    scrape_interval: 5s
+    static_configs:
+    - targets:
+      - 'hstream-exporter:9200'

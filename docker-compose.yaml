@@ -1,0 +1,131 @@
+version: "3.9"
+
+services:
+  hserver0:
+    image: hstreamdb/hstream
+    depends_on:
+      - zookeeper
+      - hstore
+    expose:
+      - 6570
+    ports:
+      - "6570:6570"
+    networks:
+      - hstream-console
+    volumes:
+      - data_store:/data/store
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp:/tmp
+    command:
+      - bash
+      - "-c"
+      - |
+        set -e
+        /usr/local/script/wait-for-storage.sh hstore 6440 zookeeper 2181 600 \
+        /usr/local/bin/hstream-server \
+        --bind-address 0.0.0.0 --port 6570 \
+        --internal-port 6571 \
+        --server-id 100 \
+        --seed-nodes "127.0.0.1:6571" \
+        --advertised-address $$(hostname -I | awk '{print $$1}') \
+        --metastore-uri zk://zookeeper:2181 \
+        --store-config /data/store/logdevice.conf \
+        --store-admin-host hstore --store-admin-port 6440
+
+  hserver-init:
+    image: hstreamdb/hstream
+    depends_on:
+      - hserver0
+    networks:
+      - hstream-console
+    command:
+      - bash
+      - "-c"
+      - |
+        timeout=60
+        until ( \
+            /usr/local/bin/hadmin server --host hserver0 --port 6570 status
+        ) >/dev/null 2>&1; do
+            >&2 echo 'Waiting for servers ...'
+            sleep 1
+            timeout=$$((timeout - 1))
+            [ $$timeout -le 0 ] && echo 'Timeout!' && exit 1;
+        done; \
+        sleep 1
+        echo "HStreamServer Started"
+
+  hstore:
+    image: hstreamdb/hstream
+    networks:
+      - hstream-console
+    volumes:
+      - data_store:/data/store
+    command:
+      - bash
+      - "-c"
+      - |
+        set -ex
+        /usr/local/bin/ld-dev-cluster -n 3 --root /data/store \
+        --use-tcp --tcp-host $$(hostname -I | awk '{print $$1}') \
+        --user-admin-port 6440 \
+        --no-interactive
+
+  zookeeper:
+    image: zookeeper
+    networks:
+      - hstream-console
+    volumes:
+      - data_zk_data:/data
+      - data_zk_datalog:/datalog
+
+  hstream-exporter:
+    depends_on:
+      hserver-init:
+        condition: service_completed_successfully
+    image: hstreamdb/hstream-exporter
+    networks:
+      - hstream-console
+    command:
+      - bash
+      - "-c"
+      - |
+        set -ex
+        hstream-exporter --addr hstream://hserver0:6570
+
+  prometheus:
+    image: prom/prometheus
+    expose:
+      - 9090
+    ports:
+      - "9090:9090"
+    networks:
+      - hstream-console
+    volumes:
+      - $PWD/prometheus:/etc/prometheus
+
+  console:
+    depends_on:
+      hserver-init:
+        condition: service_completed_successfully
+    image: hstreamdb/hstream-console
+    ports:
+      - "5177:5177"
+    networks:
+      - hstream-console
+    environment:
+      - HSTREAM_PRIVATE_ADDRESS=hserver0:6570
+      - HSTREAM_PUBLIC_ADDRESS=localhost:6570
+      - PROMETHEUS_URL=http://prometheus:9090
+      - SERVER_PORT=5177
+
+networks:
+  hstream-console:
+    name: hstream-console
+
+volumes:
+  data_store:
+    name: cloud_data_store
+  data_zk_data:
+    name: cloud_data_zk_data
+  data_zk_datalog:
+    name: cloud_data_zk_datalog
